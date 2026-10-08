@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Solana Star Catcher</title>
+<style>
+  :root {
+    --purple: #9945FF;
+    --green: #14F195;
+    --bg: #0d0b1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%;
+    background: radial-gradient(ellipse at top, #241446 0%, var(--bg) 70%);
+    color: #fff;
+    font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
+    overflow: hidden;
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 12px;
+    gap: 10px;
+  }
+  header { text-align: center; }
+  h1 {
+    font-size: clamp(1.4rem, 6vw, 2.2rem);
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    background: linear-gradient(90deg, var(--purple), var(--green));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .stats {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .stat {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(153, 69, 255, 0.15);
+    border: 1px solid var(--purple);
+    font-size: 0.95rem;
+  }
+  .stat span {
+    display: block;
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: var(--green);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat.time.low span { color: #ff5c7a; }
+  #field {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 2px solid var(--purple);
+    background: linear-gradient(180deg, rgba(153,69,255,0.12), rgba(20,241,149,0.06));
+    box-shadow: 0 0 24px rgba(153, 69, 255, 0.35);
+  }
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    padding: 20px;
+    background: rgba(13, 11, 26, 0.82);
+    backdrop-filter: blur(3px);
+    z-index: 5;
+  }
+  .overlay.hidden { display: none; }
+  .overlay h2 { font-size: 1.6rem; color: var(--green); }
+  .overlay p { line-height: 1.6; color: #d9ccff; }
+  .big { font-size: 3rem; font-weight: 800; color: var(--green); }
+  button {
+    font: inherit;
+    font-weight: 800;
+    font-size: 1.2rem;
+    padding: 14px 36px;
+    border: none;
+    border-radius: 999px;
+    color: #0d0b1a;
+    background: linear-gradient(90deg, var(--purple), var(--green));
+    cursor: pointer;
+    box-shadow: 0 4px 18px rgba(20, 241, 149, 0.35);
+    transition: transform 0.1s;
+  }
+  button:active { transform: scale(0.95); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Solana Star Catcher</h1>
+    <div class="stats">
+      <div class="stat">スコア<span id="score">0</span></div>
+      <div class="stat time" id="timeBox">残り時間<span id="time">30</span></div>
+    </div>
+  </header>
+
+  <div id="field">
+    <canvas id="canvas"></canvas>
+
+    <div class="overlay" id="startOverlay">
+      <h2>⭐ ルール ⭐</h2>
+      <p>落ちてくる星をタップ／クリックして集めよう！<br>
+         制限時間は30秒。<br>
+         <b style="color:#14F195">緑の星</b>＝+1点　<b style="color:#c79bff">紫の星</b>＝+3点（速い！）</p>
+      <button id="startBtn">スタート</button>
+    </div>
+
+    <div class="overlay hidden" id="endOverlay">
+      <h2>タイムアップ！</h2>
+      <p>あなたのスコア</p>
+      <div class="big" id="finalScore">0</div>
+      <p id="best"></p>
+      <button id="retryBtn">もう一度</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const timeBox = document.getElementById('timeBox');
+  const startOverlay = document.getElementById('startOverlay');
+  const endOverlay = document.getElementById('endOverlay');
+  const finalScoreEl = document.getElementById('finalScore');
+  const bestEl = document.getElementById('best');
+
+  const PURPLE = '#9945FF', GREEN = '#14F195';
+  const GAME_TIME = 30;
+
+  let W = 0, H = 0, dpr = 1;
+  let stars = [], particles = [], popups = [];
+  let score = 0, best = 0;
+  let running = false;
+  let endTime = 0, lastSpawn = 0, lastFrame = 0;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    const r = canvas.getBoundingClientRect();
+    W = r.width; H = r.height;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  new ResizeObserver(resize).observe(canvas);
+
+  function spawnStar() {
+    const bonus = Math.random() < 0.18;
+    const size = bonus ? 22 + Math.random() * 6 : 26 + Math.random() * 14;
+    stars.push({
+      x: size + Math.random() * (W - size * 2),
+      y: -size,
+      r: size,
+      vy: (bonus ? 260 : 120) + Math.random() * 90 + (GAME_TIME - remaining()) * 3,
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - 0.5) * 3,
+      bonus,
+    });
+  }
+
+  function remaining() {
+    return Math.max(0, (endTime - performance.now()) / 1000);
+  }
+
+  function starPath(x, y, r, rot) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rad = i % 2 === 0 ? r : r * 0.45;
+      const a = rot + (Math.PI / 5) * i - Math.PI / 2;
+      const px = x + Math.cos(a) * rad;
+      const py = y + Math.sin(a) * rad;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  function drawStar(s) {
+    const c = s.bonus ? PURPLE : GREEN;
+    ctx.save();
+    ctx.shadowColor = c;
+    ctx.shadowBlur = 18;
+    starPath(s.x, s.y, s.r, s.rot);
+    const g = ctx.createLinearGradient(s.x - s.r, s.y - s.r, s.x + s.r, s.y + s.r);
+    if (s.bonus) { g.addColorStop(0, '#c79bff'); g.addColorStop(1, PURPLE); }
+    else { g.addColorStop(0, '#b6ffe4'); g.addColorStop(1, GREEN); }
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.globalAlpha = 0.7;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function burst(x, y, color) {
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 80 + Math.random() * 200;
+      particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5, color });
+    }
+  }
+
+  function hit(px, py) {
+    if (!running) return;
+    // 手前（最後に描画された）星から判定、タップしやすいよう当たり判定を少し広げる
+    for (let i = stars.length - 1; i >= 0; i--) {
+      const s = stars[i];
+      const dx = px - s.x, dy = py - s.y;
+      const rr = s.r * 1.35 + 6;
+      if (dx * dx + dy * dy <= rr * rr) {
+        const pts = s.bonus ? 3 : 1;
+        score += pts;
+        scoreEl.textContent = score;
+        burst(s.x, s.y, s.bonus ? PURPLE : GREEN);
+        popups.push({ x: s.x, y: s.y, text: '+' + pts, life: 0.7, color: s.bonus ? '#c79bff' : GREEN });
+        stars.splice(i, 1);
+        return;
+      }
+    }
+  }
+
+  function pointerPos(e) {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+  canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const [x, y] = pointerPos(e);
+    hit(x, y);
+  });
+  canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
+
+  function update(dt, now) {
+    const t = (GAME_TIME - remaining()) / GAME_TIME; // 0→1 難易度
+    const interval = 650 - t * 350; // ms
+    if (now - lastSpawn > interval) {
+      spawnStar();
+      lastSpawn = now;
+    }
+    for (const s of stars) { s.y += s.vy * dt; s.rot += s.vr * dt; }
+    stars = stars.filter(s => s.y < H + s.r * 2);
+
+    for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    particles = particles.filter(p => p.life > 0);
+    for (const p of popups) { p.y -= 50 * dt; p.life -= dt; }
+    popups = popups.filter(p => p.life > 0);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    for (const s of stars) drawStar(s);
+    for (const p of particles) {
+      ctx.globalAlpha = Math.max(0, p.life / 0.5);
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.font = '800 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    for (const p of popups) {
+      ctx.globalAlpha = Math.min(1, p.life / 0.4);
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.text, p.x, p.y - 20);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function loop(now) {
+    if (!lastFrame) lastFrame = now;
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+
+    if (running) {
+      const rem = remaining();
+      timeEl.textContent = Math.ceil(rem);
+      timeBox.classList.toggle('low', rem <= 5);
+      if (rem <= 0) { endGame(); }
+      else update(dt, now);
+    } else {
+      // 終了後も余韻で粒子だけ動かす
+      for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+      particles = particles.filter(p => p.life > 0);
+      for (const s of stars) { s.y += s.vy * dt * 0.2; s.rot += s.vr * dt; }
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function startGame() {
+    resize();
+    score = 0;
+    stars = []; particles = []; popups = [];
+    scoreEl.textContent = 0;
+    timeEl.textContent = GAME_TIME;
+    timeBox.classList.remove('low');
+    startOverlay.classList.add('hidden');
+    endOverlay.classList.add('hidden');
+    const now = performance.now();
+    endTime = now + GAME_TIME * 1000;
+    lastSpawn = now;
+    running = true;
+  }
+
+  function endGame() {
+    running = false;
+    timeEl.textContent = 0;
+    timeBox.classList.remove('low');
+    const isNew = score > best;
+    if (isNew) best = score;
+    finalScoreEl.textContent = score;
+    bestEl.textContent = isNew && score > 0 ? '🎉 ベストスコア更新！' : 'ベストスコア: ' + best;
+    endOverlay.classList.remove('hidden');
+  }
+
+  document.getElementById('startBtn').addEventListener('click', startGame);
+  document.getElementById('retryBtn').addEventListener('click', startGame);
+
+  resize();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
